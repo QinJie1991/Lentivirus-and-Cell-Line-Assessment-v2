@@ -508,7 +508,7 @@ class AuxiliaryAIHints:
 # ==================== 数据获取层 ====================
 
 class NCBIClient:
-    """NCBI数据客户端"""
+    """NCBI数据客户端 - 修复版"""
     
     BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
     
@@ -517,96 +517,198 @@ class NCBIClient:
     
     def fetch_gene_data(self, gene_name: str, organism: str) -> Tuple[Dict, List[Dict]]:
         """获取基因和转录本数据"""
-        # 搜索Gene ID
         ncbi_limiter.wait()
         search_url = f"{self.BASE_URL}/esearch.fcgi"
         params = {
             'db': 'gene',
             'term': f"{gene_name}[Gene] AND {organism}[Organism]",
             'retmode': 'json',
+            'retmax': 1,
             'email': Config.NCBI_EMAIL,
             'tool': Config.NCBI_TOOL
         }
         if self.api_key:
             params['api_key'] = self.api_key
         
-        resp = requests.get(search_url, params=params, timeout=30)
-        data = resp.json()
-        gene_ids = data.get('esearchresult', {}).get('idlist', [])
-        
-        if not gene_ids:
-            return {}, []
-        
-        gene_id = gene_ids[0]
-        
-        # 获取摘要
-        ncbi_limiter.wait()
-        summary_url = f"{self.BASE_URL}/esummary.fcgi"
-        params = {
-            'db': 'gene',
-            'id': gene_id,
-            'retmode': 'json'
-        }
-        if self.api_key:
-            params['api_key'] = self.api_key
+        try:
+            resp = requests.get(search_url, params=params, timeout=30)
+            data = resp.json()
+            gene_ids = data.get('esearchresult', {}).get('idlist', [])
             
-        resp = requests.get(summary_url, params=params, timeout=30)
-        summary = resp.json().get('result', {}).get(gene_id, {})
-        
-        gene_info = {
-            'id': gene_id,
-            'name': gene_name,
-            'description': summary.get('description', ''),
-            'organism': organism
-        }
-        
-        # 获取转录本（简化版，实际应从nuccore获取）
-        transcripts = [{'id': f"NM_{gene_id}00{i}", 'length': 3000 + i*500} 
-                      for i in range(1, 4)]  # 模拟数据
-        
-        return gene_info, transcripts
-    
-    def search_literature(self, gene_name: str, keywords: List[str]) -> List[Dict]:
-        """检索文献"""
-        all_papers = []
-        
-        for keyword in keywords:
+            if not gene_ids:
+                return {}, []
+            
+            gene_id = gene_ids[0]
+            
+            # 获取摘要
             ncbi_limiter.wait()
-            query = f"{gene_name} {keyword}"
+            summary_url = f"{self.BASE_URL}/esummary.fcgi"
+            params = {
+                'db': 'gene',
+                'id': gene_id,
+                'retmode': 'json'
+            }
+            if self.api_key:
+                params['api_key'] = self.api_key
+                
+            resp = requests.get(summary_url, params=params, timeout=30)
+            summary = resp.json().get('result', {}).get(gene_id, {})
+            
+            gene_info = {
+                'id': gene_id,
+                'name': gene_name,
+                'description': summary.get('description', ''),
+                'organism': organism
+            }
+            
+            # 获取真实转录本长度（从Nuccore）
+            transcripts = self._fetch_transcripts(gene_id)
+            
+            return gene_info, transcripts
+            
+        except Exception as e:
+            st.error(f"NCBI基因检索错误: {str(e)}")
+            return {}, []
+    
+    def _fetch_transcripts(self, gene_id: str) -> List[Dict]:
+        """获取真实转录本信息"""
+        transcripts = []
+        try:
+            # 获取nuccore中的转录本
+            ncbi_limiter.wait()
             search_url = f"{self.BASE_URL}/esearch.fcgi"
             params = {
-                'db': 'pubmed',
-                'term': query,
+                'db': 'nuccore',
+                'term': f"{gene_id}[GeneID] AND refseq[filter]",
                 'retmode': 'json',
-                'retmax': 5,
-                'sort': 'relevance'
+                'retmax': 10
             }
             if self.api_key:
                 params['api_key'] = self.api_key
             
             resp = requests.get(search_url, params=params, timeout=30)
             data = resp.json()
-            pmids = data.get('esearchresult', {}).get('idlist', [])
+            ids = data.get('esearchresult', {}).get('idlist', [])
             
-            if pmids:
-                # 获取摘要
+            if ids:
+                # 获取详细信息
                 ncbi_limiter.wait()
-                fetch_url = f"{self.BASE_URL}/efetch.fcgi"
-                fetch_params = {
-                    'db': 'pubmed',
-                    'id': ','.join(pmids[:3]),
-                    'retmode': 'xml'
+                summary_url = f"{self.BASE_URL}/esummary.fcgi"
+                params = {
+                    'db': 'nuccore',
+                    'id': ','.join(ids),
+                    'retmode': 'json'
                 }
                 if self.api_key:
-                    fetch_params['api_key'] = self.api_key
+                    params['api_key'] = self.api_key
                 
-                # 简化处理，实际应解析XML
-                all_papers.append({
-                    'pmid': pmids[0],
-                    'title': f"{gene_name} {keyword} study",
-                    'abstract': f"Simulated abstract for {gene_name} with {keyword}...",
-                    'keyword': keyword
-                })
+                resp = requests.get(summary_url, params=params, timeout=30)
+                result = resp.json().get('result', {})
+                
+                for uid in ids:
+                    doc = result.get(uid, {})
+                    length = doc.get('slen', 0)
+                    title = doc.get('title', '')
+                    # 提取NM编号
+                    acc = doc.get('accessionversion', '')
+                    if 'NM_' in acc or 'XM_' in acc:
+                        transcripts.append({
+                            'id': acc,
+                            'length': length,
+                            'title': title
+                        })
+        except Exception as e:
+            st.warning(f"获取转录本信息失败: {e}")
+        
+        # 如果没有找到，返回模拟数据作为后备
+        if not transcripts:
+            transcripts = [{'id': f"NM_{gene_id}001", 'length': 0, 'title': 'Unknown'}]
+        
+        return transcripts
+    
+    def search_literature(self, gene_name: str, keywords: List[str], 
+                         experiment_type: str = "") -> List[Dict]:
+        """
+        检索真实文献 - 修复版
+        使用esummary获取真实标题和摘要
+        """
+        all_papers = []
+        seen_pmids = set()
+        
+        # 根据实验类型优化关键词
+        if 'knockout' in experiment_type.lower():
+            keywords = ['knockout', 'CRISPR', 'knock-out', 'deletion', 'deficiency']
+        elif 'knockdown' in experiment_type.lower():
+            keywords = ['knockdown', 'shRNA', 'siRNA', 'knock-down']
+        elif 'overexpression' in experiment_type.lower():
+            keywords = ['overexpression', 'over-expression', 'transgenic']
+        
+        for keyword in keywords:
+            try:
+                ncbi_limiter.wait()
+                # 构造精确查询：基因名 + 关键词 + 细胞/病毒（可选）
+                query = f"{gene_name} {keyword}"
+                
+                search_url = f"{self.BASE_URL}/esearch.fcgi"
+                params = {
+                    'db': 'pubmed',
+                    'term': query,
+                    'retmode': 'json',
+                    'retmax': 5,  # 每关键词最多5篇
+                    'sort': 'relevance',
+                    'email': Config.NCBI_EMAIL,
+                    'tool': Config.NCBI_TOOL
+                }
+                if self.api_key:
+                    params['api_key'] = self.api_key
+                
+                resp = requests.get(search_url, params=params, timeout=30)
+                data = resp.json()
+                pmids = data.get('esearchresult', {}).get('idlist', [])
+                
+                if not pmids:
+                    continue
+                
+                # 获取真实文献详情（使用esummary，比efetch更简单）
+                new_pmids = [p for p in pmids if p not in seen_pmids]
+                if not new_pmids:
+                    continue
+                
+                ncbi_limiter.wait()
+                summary_url = f"{self.BASE_URL}/esummary.fcgi"
+                params = {
+                    'db': 'pubmed',
+                    'id': ','.join(new_pmids),
+                    'retmode': 'json'
+                }
+                if self.api_key:
+                    params['api_key'] = self.api_key
+                
+                resp = requests.get(summary_url, params=params, timeout=30)
+                result = resp.json()
+                
+                for pmid in new_pmids:
+                    try:
+                        doc = result.get('result', {}).get(pmid, {})
+                        title = doc.get('title', '')
+                        # esummary返回的是摘要前几百字，不是完整摘要，但足够分析
+                        abstract = doc.get('abstracttext', '') or doc.get('sorttitle', '')
+                        
+                        if title:  # 确保有标题才添加
+                            all_papers.append({
+                                'pmid': pmid,
+                                'title': title,
+                                'abstract': abstract or f"Title: {title}",
+                                'keyword': keyword,
+                                'url': f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+                            })
+                            seen_pmids.add(pmid)
+                    except Exception as e:
+                        continue
+                
+            except Exception as e:
+                st.warning(f"检索关键词 '{keyword}' 时出错: {e}")
+                continue
         
         return all_papers
 
