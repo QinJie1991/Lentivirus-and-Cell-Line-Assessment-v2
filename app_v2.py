@@ -208,92 +208,62 @@ class GeneAutocompleteService:
 # ==================== 简化的基因输入组件 ====================
 
 class GeneInputComponent:
-    """简化的基因输入组件（避免过度复杂的状态管理）"""
-    
-    def __init__(self, gene_service: GeneAutocompleteService):
-        self.gene_service = gene_service
-        self.debounce = DebounceTimer(0.3)  # 300ms防抖
-    
     def render(self, organism: str, key_prefix: str = "gene") -> Optional[str]:
-        """
-        渲染基因输入组件
-        返回选中的基因symbol，或None
-        """
-        # 使用简洁的session state key
+        # 1. 定义session state keys
         input_key = f"{key_prefix}_input"
         selected_key = f"{key_prefix}_selected"
+        suggestions_key = f"{key_prefix}_suggestions"
+        last_query_key = f"{key_prefix}_last_query"
         
-        # 初始化
+        # 2. 初始化
         if input_key not in st.session_state:
             st.session_state[input_key] = ""
         if selected_key not in st.session_state:
             st.session_state[selected_key] = ""
         
-        # 输入框
-        col1, col2 = st.columns([1, 0.1])
+        # 3. 创建输入框（不使用on_change，直接读取值）
+        user_input = st.text_input(
+            "基因名（支持自动完成，输入2个字符以上显示建议）",
+            value=st.session_state[input_key],
+            key=f"{key_prefix}_text_widget"
+        )
         
-        with col1:
-            user_input = st.text_input(
-                "基因名（支持自动完成）",
-                placeholder="输入2个字符以上获取建议，如: TP, EG, KR...",
-                value=st.session_state[input_key],
-                key=f"{key_prefix}_text"
-            )
-        
-        with col2:
-            st.write("")  # 对齐
-            st.write("")
-            if st.button("🔄", key=f"{key_prefix}_refresh", help="清除选择"):
-                st.session_state[input_key] = ""
+        # 4. 检测输入变化并更新状态
+        if user_input != st.session_state[input_key]:
+            st.session_state[input_key] = user_input
+            # 输入变化时重置选择状态
+            if st.session_state[selected_key] and user_input != st.session_state[selected_key]:
                 st.session_state[selected_key] = ""
+                st.session_state[suggestions_key] = []
+            # 触发rerun以获取新建议（>=2字符时）
+            if len(user_input) >= 2:
                 st.rerun()
         
-        selected_gene = None
-        
-        # 获取建议（带防抖）
-        if len(user_input) >= 2 and self.debounce.should_trigger():
-            with st.spinner(""):
+        # 5. 获取基因建议（当输入>=2字符且未选择时）
+        if len(user_input) >= 2 and not st.session_state[selected_key]:
+            last_query = st.session_state.get(last_query_key, "")
+            if user_input != last_query:  # 避免重复查询
                 suggestions = self.gene_service.get_suggestions(user_input, organism)
-                st.session_state[f"{key_prefix}_suggestions"] = suggestions
+                st.session_state[suggestions_key] = suggestions
+                st.session_state[last_query_key] = user_input
+                st.rerun()
         
-        # 显示建议
-        suggestions = st.session_state.get(f"{key_prefix}_suggestions", [])
-        
+        # 6. 显示建议按钮（点击后设置selected_key）
+        suggestions = st.session_state.get(suggestions_key, [])
         if suggestions and not st.session_state[selected_key]:
-            st.markdown("**💡 点击选择基因：**")
-            
-            # 创建按钮网格
-            cols = st.columns(min(len(suggestions), 4))
-            for i, gene in enumerate(suggestions[:8]):  # 最多显示8个
-                with cols[i % 4]:
-                    btn_label = f"{gene['symbol']}\n<small>{gene['name'][:30]}...</small>"
-                    if st.button(btn_label, key=f"{key_prefix}_btn_{i}", use_container_width=True):
-                        st.session_state[selected_key] = gene['symbol']
-                        st.session_state[input_key] = gene['symbol']
-                        st.session_state[f"{key_prefix}_info"] = gene
-                        st.rerun()
+            for i, gene in enumerate(suggestions):
+                if st.button(gene['symbol'], key=f"{key_prefix}_sug_{i}"):
+                    st.session_state[selected_key] = gene['symbol']
+                    st.session_state[input_key] = gene['symbol']
+                    st.session_state[f"{key_prefix}_info"] = gene
+                    st.rerun()
         
-        # 显示已选基因信息卡片
+        # 7. 返回逻辑（关键修复）
         if st.session_state[selected_key]:
-            gene_info = st.session_state.get(f"{key_prefix}_info", {})
-            if gene_info:
-                st.markdown(f"""
-                <div style='padding: 12px; border-radius: 8px; background-color: #e3f2fd; 
-                            border: 1px solid #2196F3; margin: 10px 0;'>
-                    <h4 style='color: #1976D2; margin: 0;'>✅ 已选择: {gene_info.get('symbol', '')}</h4>
-                    <p style='margin: 5px 0; font-size: 0.9em;'>
-                        <b>全称:</b> {gene_info.get('name', '')}<br>
-                        <b>染色体:</b> {gene_info.get('chromosome', '')} | 
-                        <b>类型:</b> {gene_info.get('type', '')}<br>
-                        <a href='https://www.ncbi.nlm.nih.gov/gene/{gene_info.get('gene_id', '')}' 
-                           target='_blank' style='color: #1976D2;'>🔗 NCBI查看详情</a>
-                    </p>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            selected_gene = st.session_state[selected_key]
-        
-        return selected_gene
+            return st.session_state[selected_key]  # 返回点击选择的基因
+        elif user_input:
+            return user_input  # 返回用户直接输入的基因名（不点建议也可以）
+        return None
 
 # ==================== NCBI E-utilities客户端（用于深度数据） ====================
 
