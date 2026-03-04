@@ -760,66 +760,59 @@ def render_sidebar():
         # 显示Secret配置状态
         if secret_qwen:
             st.success("✅ 阿里云千问 Secret: 已配置")
-            qwen_help = "留空则使用Secret配置的Key，填写则覆盖使用新Key"
+            qwen_help = "留空则使用Secret，填写则覆盖"
         else:
             st.warning("⚠️ 阿里云千问 Secret: 未配置")
-            qwen_help = "请输入API Key（或在Secrets中配置）"
+            qwen_help = "必须输入API Key"
         
         if secret_ncbi:
             st.info("ℹ️ NCBI Secret: 已配置")
-            ncbi_help = "留空则使用Secret，填写则覆盖"
+            ncbi_help = "留空则使用Secret"
         else:
-            ncbi_help = "可选，提高访问频率"
+            ncbi_help = "可选"
         
         st.divider()
+        st.subheader("覆盖配置（可选）")
         
         # 输入框（可选填，用于覆盖Secret）
-        st.subheader("实时配置（可选）")
-        
-        # 阿里云千问输入
         user_qwen = st.text_input(
-            "阿里云千问 API Key（覆盖Secret）", 
+            "阿里云千问 API Key", 
             type="password",
             help=qwen_help,
-            placeholder="默认使用Secret配置" if secret_qwen else "请输入sk-开头的Key"
+            placeholder="默认使用Secret" if secret_qwen else "请输入sk-开头的Key"
         )
         
-        # NCBI输入
         user_ncbi = st.text_input(
-            "NCBI API Key（覆盖Secret）",
+            "NCBI API Key",
             type="password",
             help=ncbi_help,
-            placeholder="默认使用Secret配置" if secret_ncbi else "可选"
+            placeholder="默认使用Secret" if secret_ncbi else "可选"
         )
         
-        # 优先级判断：用户输入 > Secret
+        # 优先级：用户输入 > Secret
         final_qwen = user_qwen.strip() if user_qwen else secret_qwen
         final_ncbi = user_ncbi.strip() if user_ncbi else secret_ncbi
         
-        # 显示最终使用的配置（调试用，可删除）
+        # 显示最终使用状态
         st.divider()
-        with st.expander("🔍 查看当前配置状态（调试用）"):
-            st.write(f"Secret千问: {'已配置' if secret_qwen else '未配置'}")
-            st.write(f"用户输入千问: {'已填写' if user_qwen else '未填写'}")
-            st.write(f"**最终使用千问: {'✅ 已配置' if final_qwen else '❌ 未配置'}**")
+        if final_qwen:
+            if user_qwen and secret_qwen:
+                st.info("🔧 **使用状态**: 覆盖Secret（使用输入的Key）")
+            elif user_qwen:
+                st.info("🔧 **使用状态**: 使用主界面输入的Key")
+            else:
+                st.info("🔧 **使用状态**: 使用Secret配置的Key")
+        else:
+            st.error("❌ **使用状态**: 未配置Key")
         
-        st.divider()
-        st.info("""
-        **优先级规则**：
-        1. 主界面输入 > Secret配置
-        2. 若都未配置，无法使用AI分析
-        3. 临时测试其他Key时，直接在上方输入
-        """)
-        
-        return final_ncbi, final_qwen, bool(secret_qwen), bool(secret_ncbi)
-
+        return final_ncbi, final_qwen
 
 def main():
     """主函数"""
     render_header()
     
-    # 获取API Key（已处理优先级逻辑）
-    ncbi_key, qwen_key, has_secret_qwen, has_secret_ncbi = render_sidebar()
+    # 获取API Key（只返回2个值，不再返回布尔状态）
+    ncbi_key, qwen_key = render_sidebar()
     
     gene, organism, exp_type, analyze = render_input_form()
     
@@ -830,22 +823,14 @@ def main():
             st.info("""
             **解决方法（二选一）**：
             
-            **方法1（推荐）**: 在 Streamlit Cloud Secrets 中配置
+            **方法1**: 在 Streamlit Cloud Secrets 中配置
             ```
             DASHSCOPE_API_KEY = "sk-your-key"
             ```
             
-            **方法2**: 在左侧侧边栏"实时配置"中直接输入API Key
+            **方法2**: 在左侧侧边栏直接输入API Key
             """)
             return
-        
-        # 显示使用的是哪种配置（透明化）
-        if has_secret_qwen and st.session_state.get('user_qwen_input'):
-            st.info("ℹ️ 使用状态: **覆盖Secret配置**（使用主界面输入的Key）")
-        elif has_secret_qwen:
-            st.info("ℹ️ 使用状态: **使用Secret默认配置**")
-        else:
-            st.info("ℹ️ 使用状态: **使用主界面临时输入的Key**")
         
         # 初始化引擎
         engine = HybridAssessmentEngine(
@@ -853,9 +838,13 @@ def main():
             ncbi_api_key=ncbi_key
         )
         
-        # 执行评估...（后续代码不变）
+        # 执行评估（后续代码保持不变）
         with st.spinner("正在进行混合决策评估..."):
             result = engine.assess(gene, organism, exp_type)
+        
+        if 'error' in result:
+            st.error(result['error'])
+            return
 
 def render_input_form():
     """渲染输入表单"""
